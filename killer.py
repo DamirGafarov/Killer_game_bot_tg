@@ -674,7 +674,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         time_left = end_date - datetime.now()
         text += f"Время до окончания: {max(0, time_left.days)} дней\n"
 
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text)
 
 # ------------------------------------------------------------
 # Игровые команды
