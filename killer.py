@@ -132,7 +132,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
     f"Привет, {user.first_name}!\n"
     "Это бот для игры 'Киллер'.\n\n"
-    "1. Игра организуется на принципе честной игры! Каждый игрок обязуется соблюдать её правила. При их нарушении игрок выбрасывается из игры.\n\n"
+    "1. Игра организуется на принципе честной игры! Каждый игрок обязуется соблюдать её правила. При их нарушении игрок выбрасывается из игры.\n"
     "2. Суть игры заключается в охоте за жертвой. Каждый участник является одновременно и охотником и жертвой.\n"
     "3. Игра начинается для всех одновременно! Вы получаете досье на свою жертву. В каждом досье находится фотография жертвы и краткое описание её привычек. Эта информация может помочь вам как охотнику выследить жертву. В то же самое время кто-то получает ваше досье и начинает охоту на вас.\n"
     "4. Жертва считается убитой, если охотник выстрелил в неё из пальца, находясь в закрытом помещении один на один, или на улице, где в радиусе 20 метров никого нет. Нельзя убивать при свидетелях - будь то участник игры или просто посторонний человек.\n"
@@ -303,14 +303,14 @@ async def show_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     (full_name, course, group, social, about, buildings, dorm, photo_id) = target
 
     target_info = (
-        f"🔫 **Твоя цель:**\n\n"
-        f"**Имя:** {full_name}\n"
-        f"**Курс:** {course}\n"
-        f"**Группа:** {group}\n"
-        f"**Соцсети:** {social}\n"
-        f"**О себе:** {about}\n"
-        f"**Корпуса:** {buildings}\n"
-        f"**Общежитие/район:** {dorm}\n\n"
+        f"🔫 Твоя цель:\n\n"
+        f"Имя: {full_name}\n"
+        f"Курс: {course}\n"
+        f"Группа: {group}\n"
+        f"Соцсети: {social}\n"
+        f"О себе: {about}\n"
+        f"Корпуса: {buildings}\n"
+        f"Общежитие/район: {dorm}\n\n"
         f"Когда встретишь цель, она должна сообщить тебе свой личный код.\n"
         f"Введи его командой /kill после убийства."
     )
@@ -885,12 +885,13 @@ async def show_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     player = cursor.fetchone()
 
     if not player:
-        await update.message.reply_text("Ты не зарегистрирован в игре. Используй /register")
+        await update.message.reply_text("❌ Ты не зарегистрирован в игре. Используй /register")
         conn.close()
         return
 
     (full_name, course, group, social, about, buildings, dorm, photo_id, is_alive, kills, personal_code) = player
 
+    # Формируем текст БЕЗ Markdown разметки
     message = (
         f"👤 Твоё досье:\n\n"
         f"Имя: {full_name}\n"
@@ -902,19 +903,26 @@ async def show_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Общежитие/район: {dorm}\n"
         f"Статус: {'жив' if is_alive else 'мёртв'}\n"
         f"Убийств: {kills}\n"
-        f"Твой личный код: ||{personal_code}||\n\n"
+        f"Твой личный код: {personal_code}\n\n"
     )
     if is_alive:
         message += "Будь осторожен, за тобой могут охотиться!"
     else:
         message += "Ты уже мёртв в этой игре. Жди следующей!"
 
-    await context.bot.send_photo(
-        chat_id=user.id,
-        photo=photo_id,
-        caption=message,
-        parse_mode='Markdown'
-    )
+    # Отправляем фото (если есть) и текст
+    if photo_id:
+        try:
+            await context.bot.send_photo(
+                chat_id=user.id,
+                photo=photo_id,
+                caption=message
+            )
+        except Exception as e:
+            # Если фото не отправилось, шлём только текст
+            await update.message.reply_text(message + "\n\n⚠️ Фото не загрузилось")
+    else:
+        await update.message.reply_text(message)
 
     conn.close()
 
