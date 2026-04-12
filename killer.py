@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 REGISTER, UPLOAD_PHOTO, ADD_HABITS = range(3)
 KILL_CONFIRMATION = range(1)
 
-# Настройки игры
+# Настройки
 GAME_DURATION_DAYS = 14
-ADMIN_ID = 1513781380  # (узнать через @userinfobot)
+ADMIN_ID = 1513781380  
 FIO, COURSE, GROUP, SOCIAL, ABOUT, BUILDINGS, DORM, PHOTO = range(8)
-# Инициализация базы данных
+
 def init_db():
     conn = sqlite3.connect('killer_game.db')
     cursor = conn.cursor()
@@ -214,7 +214,7 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     photo_file = await update.message.photo[-1].get_file()
     context.user_data['photo_id'] = photo_file.file_id
 
-    # Генерация личного кода
+    # Личный код
     personal_code = generate_personal_code()
 
     # Сохранение в БД
@@ -370,7 +370,7 @@ async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     conn.commit()
     conn.close()
 
-    # Оповещаем всех игроков
+    # Оповещение всех игроков
     for player_id in players:
         try:
             await context.bot.send_message(
@@ -484,7 +484,7 @@ async def assign_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         conn.close()
         return
 
-    # Удаляем старые активные цели
+    # Удаление старых активных целей
     cursor.execute("DELETE FROM targets")
     random.shuffle(players)
 
@@ -891,7 +891,6 @@ async def show_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     (full_name, course, group, social, about, buildings, dorm, photo_id, is_alive, kills, personal_code) = player
 
-    # Формируем текст БЕЗ Markdown разметки
     message = (
         f"👤 Твоё досье:\n\n"
         f"Имя: {full_name}\n"
@@ -930,10 +929,7 @@ async def show_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # Основная функция
 # ------------------------------------------------------------
 def main() -> None:
-    # Создаём Application
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Инициализация базы данных
     init_db()
 
     # Регистрация
@@ -981,7 +977,7 @@ def main() -> None:
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("status", status))
 
-    # Запуск бота
+    # Запуск
     application.run_polling()
 
 if __name__ == '__main__':
