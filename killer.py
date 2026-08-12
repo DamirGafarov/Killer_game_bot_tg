@@ -2,7 +2,7 @@ import logging
 import random
 import sqlite3
 from datetime import datetime, timedelta
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,8 +12,15 @@ from telegram.ext import (
     filters
 )
 import os
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8377571705:AAEO50McGhCsuWGgZnhhgmhKeoUeGCHrm8s")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1513781380"))
+if os.path.exists("/app/data"):
+    DB_PATH = "/app/data/killer_game.db"
+else:
+    DB_PATH = "killer_game.db"
+
+
+# --- Конфигурация ---
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8377571705:AAEO50McGhCsuWGgZnhhgmhKeoUeGCHrm8s")  # замените на свой токен
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1513781380"))  # замените на свой ID
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,16 +30,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для регистрации
-REGISTER, UPLOAD_PHOTO, ADD_HABITS = range(3)
+FIO, COURSE, GROUP, SOCIAL, ABOUT, BUILDINGS, DORM, PHOTO = range(8)
 KILL_CONFIRMATION = range(1)
 
-# Настройки
+# Глобальные настройки
 GAME_DURATION_DAYS = 14
-ADMIN_ID = 1513781380  
-FIO, COURSE, GROUP, SOCIAL, ABOUT, BUILDINGS, DORM, PHOTO = range(8)
 
+
+# --- Работа с БД ---
 def init_db():
-    conn = sqlite3.connect('killer_game.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -88,244 +95,53 @@ def init_db():
     )
     ''')
 
+    # Инициализация настроек, если их нет
+    cursor.execute("INSERT OR IGNORE INTO game_settings (key, value) VALUES ('reward', '1')")
+    cursor.execute("INSERT OR IGNORE INTO game_settings (key, value) VALUES ('game_started', 'False')")
+    cursor.execute("INSERT OR IGNORE INTO game_settings (key, value) VALUES ('game_start_date', '')")
+
     conn.commit()
     conn.close()
 
-# Вспомогательная функция для получения состояния игры
+# --- Вспомогательные функции ---
 async def get_game_state():
-    conn = sqlite3.connect('killer_game.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute("SELECT value FROM game_settings WHERE key='game_started'")
     started = cursor.fetchone()
     cursor.execute("SELECT value FROM game_settings WHERE key='game_start_date'")
     start_date = cursor.fetchone()
-
     conn.close()
-
     return {
         'started': started[0] == 'True' if started else False,
-        'start_date': datetime.fromisoformat(start_date[0]) if start_date else None
+        'start_date': datetime.fromisoformat(start_date[0]) if start_date and start_date[0] else None
     }
 
-# Генерация кода для убийства
 def generate_personal_code():
     return ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', k=6))
 
 def generate_kill_code():
     return ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', k=6))
-# ------------------------------------------------------------
-# Обработчики команд
-# ------------------------------------------------------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    game_state = await get_game_state()
-
-    if game_state['started']:
-        await update.message.reply_text(
-            f"Игра уже началась! Ты опоздал, {user.first_name}.\n"
-            "Но ты можешь следить за статистикой с помощью /stats"
-        )
-        return
-
-    await update.message.reply_text(
-    f"Привет, {user.first_name}!\n"
-    "Это бот для игры 'Киллер'.\n\n"
-    "1. Игра организуется на принципе честной игры! Каждый игрок обязуется соблюдать её правила. При их нарушении игрок выбрасывается из игры.\n"
-    "2. Суть игры заключается в охоте за жертвой. Каждый участник является одновременно и охотником и жертвой.\n"
-    "3. Игра начинается для всех одновременно! Вы получаете досье на свою жертву. В каждом досье находится фотография жертвы и краткое описание её привычек. Эта информация может помочь вам как охотнику выследить жертву. В то же самое время кто-то получает ваше досье и начинает охоту на вас.\n"
-    "4. Жертва считается убитой, если охотник выстрелил в неё из пальца, находясь в закрытом помещении один на один, или на улице, где в радиусе 20 метров никого нет. Нельзя убивать при свидетелях - будь то участник игры или просто посторонний человек.\n"
-    "5. После смерти жертва должна передать охотнику секретный пароль. Охотник должен ввести, полученный пароль в ТГ-бот и получить новую жертву.\n"
-    "6. В случае если охотник и жертва охотятся друг на друга, они должны обратиться к организаторам для того, чтобы получить новую жертву.\n"
-    "7. Игра заканчивается тогда, когда остаются только два участника. Либо вышло время, отведённое на игру. Побеждает охотник, который убил наибольшее количество жертв.\n\n"
-    "Чтобы зарегистрироваться, используй /register"
-)
-
-
-async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    game_state = await get_game_state()
-    if game_state['started']:
-        await update.message.reply_text("Регистрация закрыта, игра уже началась!")
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "📋 Регистрация в игре 'Киллер'.\n"
-        "Пожалуйста, введи своё полное имя (ФИО или ФИ):"
-    )
-    return FIO
-
-# 1. ФИО
-async def get_fio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['full_name'] = update.message.text
-    await update.message.reply_text("Введи свой курс (например, '3 курс', 'преподаватель' или др):")
-    return COURSE
-
-# 2. Курс
-async def get_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['course'] = update.message.text
-    await update.message.reply_text("Введи свою академическую группу (например эиф-103/6):")
-    return GROUP
-
-# 3. Группа
-async def get_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['academic_group'] = update.message.text
-    await update.message.reply_text(
-        "Укажи ссылки на свои соцсети (ВК, Telegram)\n"
-    )
-    return SOCIAL
-
-# 4. Соцсети
-async def get_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['social_links'] = update.message.text
-    await update.message.reply_text(
-        "Расскажи немного о себе: где ты обычно обитаешь, твой примерный маршрут на день, любимые места.\n"
-        "Это поможет охотнику тебя найти."
-    )
-    return ABOUT
-
-# 5. О себе
-async def get_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['about_self'] = update.message.text
-    await update.message.reply_text(
-        "В каких корпусах у тебя обычно проходят пары?"
-    )
-    return BUILDINGS
-
-# 6. Корпуса
-async def get_buildings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['buildings'] = update.message.text
-    await update.message.reply_text(
-        "Ты живешь в общаге? Если да, укажи корпус.\n"
-        "Если нет, напиши 'нет' или укажи примерный район проживания."
-    )
-    return DORM
-
-# 7. Общежитие
-async def get_dorm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['dormitory'] = update.message.text
-    await update.message.reply_text(
-        "Теперь загрузи своё фото (оно будет в досье для охотника)."
-    )
-    return PHOTO
-
-# 8. Фото и завершение регистрации
-async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    photo_file = await update.message.photo[-1].get_file()
-    context.user_data['photo_id'] = photo_file.file_id
-
-    # Личный код
-    personal_code = generate_personal_code()
-
-    # Сохранение в БД
-    conn = sqlite3.connect('killer_game.db')
+def get_reward():
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    cursor.execute("SELECT value FROM game_settings WHERE key='reward'")
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row else 1
 
-    # Проверка на повторную регистрацию
-    cursor.execute("SELECT user_id FROM players WHERE user_id = ?", (update.effective_user.id,))
-    if cursor.fetchone():
-        await update.message.reply_text("Ты уже зарегистрирован! Если хочешь обновить данные, сначала обратись к администратору.")
-        conn.close()
-        return ConversationHandler.END
-
-    cursor.execute('''
-        INSERT INTO players 
-        (user_id, username, full_name, course, academic_group, social_links, about_self, buildings, dormitory, photo_id, personal_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        update.effective_user.id,
-        update.effective_user.username,
-        context.user_data['full_name'],
-        context.user_data['course'],
-        context.user_data['academic_group'],
-        context.user_data['social_links'],
-        context.user_data['about_self'],
-        context.user_data['buildings'],
-        context.user_data['dormitory'],
-        context.user_data['photo_id'],
-        personal_code
-    ))
-
+def set_reward(value):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE game_settings SET value = ? WHERE key = 'reward'", (str(value),))
     conn.commit()
     conn.close()
 
-    # Отправка подтверждения
-    await update.message.reply_text(
-        f"✅ Регистрация завершена! Ты в игре.\n"
-        f"🔐 Твой личный секретный код: {personal_code}\n\n"
-        "Запомни его! Ты должен будешь передать его охотнику, если он тебя убьёт.\n"
-        "Ожидай начала. Когда игра начнется, ты получишь свою первую цель.\n\n"
-        "Ты можешь проверить свои данные с помощью /me"
-    )
-
-    # Уведомление админу
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"📝 Новый участник!\nИмя: {context.user_data['full_name']}\nГруппа: {context.user_data['academic_group']}\nКод: {personal_code}\nID: {update.effective_user.id}"
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить уведомление админу: {e}")
-
-    return ConversationHandler.END
-
-# Функция отмены
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Регистрация отменена.")
-    return ConversationHandler.END
-
-# Обновлённая команда /target – показывает полное досье
-async def show_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    game_state = await get_game_state()
-
-    if not game_state['started']:
-        await update.message.reply_text("Игра еще не началась!")
-        return
-
-    conn = sqlite3.connect('killer_game.db')
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        SELECT p.full_name, p.course, p.academic_group, p.social_links, p.about_self,
-               p.buildings, p.dormitory, p.photo_id
-        FROM targets t
-        JOIN players p ON t.target_id = p.user_id
-        WHERE t.hunter_id = ? AND t.is_active = 1
-    ''', (user.id,))
-
-    target = cursor.fetchone()
-    if not target:
-        await update.message.reply_text("У тебя нет активной цели.")
-        conn.close()
-        return
-
-    (full_name, course, group, social, about, buildings, dorm, photo_id) = target
-
-    target_info = (
-        f"🔫 Твоя цель:\n\n"
-        f"Имя: {full_name}\n"
-        f"Курс: {course}\n"
-        f"Группа: {group}\n"
-        f"Соцсети: {social}\n"
-        f"О себе: {about}\n"
-        f"Корпуса: {buildings}\n"
-        f"Общежитие/район: {dorm}\n\n"
-        f"Когда встретишь цель, она должна сообщить тебе свой личный код.\n"
-        f"Введи его командой /kill после убийства."
-    )
-
-    await context.bot.send_photo(
-        chat_id=user.id,
-        photo=photo_id,
-        caption=target_info
-    )
-    conn.close()
-
-# ------------------------------------------------------------
-# Административные команды
-# ------------------------------------------------------------
-
+# --- Обработчики команд ---
+# ... (все существующие команды: start, register, get_fio, ... остаются без изменений,
+#      но для краткости я приведу только новые и изменённые функции.
+#      Полный код см. в приложении в конце сообщения.)
 async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Эта команда только для организаторов!")
@@ -468,38 +284,6 @@ async def list_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         text += f"• {p[1]} ({p[2]}) — убийств: {p[4]}\n"
 
     await update.message.reply_text(text)
-
-async def assign_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Эта команда только для организаторов!")
-        return
-
-    conn = sqlite3.connect('killer_game.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM players WHERE is_alive=1")
-    players = [row[0] for row in cursor.fetchall()]
-
-    if len(players) < 2:
-        await update.message.reply_text("Недостаточно живых игроков для назначения целей.")
-        conn.close()
-        return
-
-    # Удаление старых активных целей
-    cursor.execute("DELETE FROM targets")
-    random.shuffle(players)
-
-    for i in range(len(players)):
-        hunter = players[i]
-        target = players[(i + 1) % len(players)]
-        kill_code = generate_kill_code()
-        cursor.execute(
-            "INSERT INTO targets (hunter_id, target_id, kill_code) VALUES (?, ?, ?)",
-            (hunter, target, kill_code)
-        )
-
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("Цели переназначены.")
 
 async def add_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
@@ -676,157 +460,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(text)
 
-# ------------------------------------------------------------
-# Игровые команды
-# ------------------------------------------------------------
-
-
-async def kill_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
-    game_state = await get_game_state()
-
-    if not game_state['started']:
-        await update.message.reply_text("Игра еще не началась!")
-        return ConversationHandler.END
-
-    conn = sqlite3.connect('killer_game.db')
-    cursor = conn.cursor()
-
-    # Проверяем, есть ли у охотника активная цель
-    cursor.execute('''
-    SELECT target_id FROM targets 
-    WHERE hunter_id = ? AND is_active = 1
-    ''', (user.id,))
-    target = cursor.fetchone()
-
-    if not target:
-        await update.message.reply_text("У тебя нет активной цели!")
-        conn.close()
-        return ConversationHandler.END
-
-    context.user_data['target_id'] = target[0]
-    await update.message.reply_text(
-        "Введи личный код, который тебе сообщила жертва:"
-    )
-    return KILL_CONFIRMATION
-
-async def confirm_kill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
-    entered_code = update.message.text.strip().upper()
-    target_id = context.user_data.get('target_id')
-
-    if not target_id:
-        await update.message.reply_text("Что-то пошло не так. Попробуй снова.")
-        return ConversationHandler.END
-
-    conn = sqlite3.connect('killer_game.db')
-    cursor = conn.cursor()
-
-    # Проверяем, что цель жива и код совпадает
-    cursor.execute('''
-    SELECT full_name, personal_code, is_alive FROM players WHERE user_id = ?
-    ''', (target_id,))
-    victim = cursor.fetchone()
-
-    if not victim or not victim[2]:
-        await update.message.reply_text("Эта цель уже мертва или не существует.")
-        conn.close()
-        return ConversationHandler.END
-
-    victim_name, correct_code, is_alive = victim
-    if entered_code != correct_code:
-        await update.message.reply_text("Неверный код! Попробуй еще раз.")
-        conn.close()
-        return KILL_CONFIRMATION
-
-    # Код верный — регистрируем убийство
-    # 1. Записываем убийство
-    cursor.execute('''
-    INSERT INTO kills (hunter_id, victim_id, kill_code)
-    VALUES (?, ?, ?)
-    ''', (user.id, target_id, correct_code))
-
-    # 2. Увеличиваем счётчик убийств охотника
-    cursor.execute('''
-    UPDATE players SET kills = kills + 1 WHERE user_id = ?
-    ''', (user.id,))
-
-    # 3. Помечаем жертву мёртвой
-    cursor.execute('''
-    UPDATE players SET is_alive = 0 WHERE user_id = ?
-    ''', (target_id,))
-
-    # 4. Деактивируем текущую цель охотника
-    cursor.execute('''
-    UPDATE targets SET is_active = 0 WHERE hunter_id = ? AND target_id = ?
-    ''', (user.id, target_id))
-
-    # 5. Находим цель убитого (новую цель для охотника)
-    cursor.execute('''
-    SELECT target_id, kill_code FROM targets 
-    WHERE hunter_id = ? AND is_active = 1
-    ''', (target_id,))
-
-    new_target = cursor.fetchone()
-
-    if new_target:
-        new_target_id, new_kill_code = new_target
-        cursor.execute('''
-        INSERT INTO targets (hunter_id, target_id, kill_code)
-        VALUES (?, ?, ?)
-        ''', (user.id, new_target_id, new_kill_code))
-
-        # Деактивируем старую цель убитого
-        cursor.execute('''
-        UPDATE targets SET is_active = 0 WHERE hunter_id = ? AND target_id = ?
-        ''', (target_id, new_target_id))
-
-    conn.commit()
-
-    # Уведомляем жертву
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=f"💀 Ты был убит игроком {user.full_name}! Игра для тебя окончена."
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить сообщение убитому игроку {target_id}: {e}")
-
-    # Отвечаем охотнику
-    if new_target:
-        cursor.execute('''
-        SELECT full_name, photo_id FROM players WHERE user_id = ?
-        ''', (new_target_id,))
-        target_info = cursor.fetchone()
-
-        await update.message.reply_text(
-            f"🎯 Ты успешно убил {victim_name}!\n"
-            f"Теперь твоя новая цель: {target_info[0]}\n"
-            "Используй /target чтобы увидеть досье."
-        )
-
-        await context.bot.send_photo(
-            chat_id=user.id,
-            photo=target_info[1],
-            caption=f"Твоя новая цель: {target_info[0]}"
-        )
-    else:
-        await update.message.reply_text(
-            f"🎯 Ты успешно убил {victim_name}!\n"
-            "Кажется, ты последний выживший! Поздравляю с победой!"
-        )
-
-    # Проверяем окончание игры
-    cursor.execute('''
-    SELECT COUNT(*) FROM players WHERE is_alive = 1
-    ''')
-    alive_count = cursor.fetchone()[0]
-
-    if alive_count <= 2:
-        await end_game_logic(context.bot)
-
-    conn.close()
-    return ConversationHandler.END
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = sqlite3.connect('killer_game.db')
@@ -925,30 +558,579 @@ async def show_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     conn.close()
 
+# --- НОВЫЕ АДМИН-КОМАНДЫ ---
+
+async def view_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать анкету игрока по user_id или имени."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Только для админа.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /view_profile <user_id или часть имени>")
+        return
+    query = ' '.join(args)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Пробуем как число (user_id)
+    try:
+        user_id = int(query)
+        cursor.execute("SELECT * FROM players WHERE user_id = ?", (user_id,))
+    except ValueError:
+        cursor.execute("SELECT * FROM players WHERE full_name LIKE ?", (f"%{query}%",))
+    player = cursor.fetchone()
+    conn.close()
+    if not player:
+        await update.message.reply_text("Игрок не найден.")
+        return
+    # Формируем вывод всех полей
+    fields = ['user_id', 'username', 'full_name', 'faculty', 'course', 'academic_group',
+              'social_links', 'about_self', 'buildings', 'dormitory', 'photo_id', 'habits',
+              'is_alive', 'registration_date', 'kills', 'personal_code']
+    msg = "📋 **Анкета игрока**\n\n"
+    for i, field in enumerate(fields):
+        value = player[i] if i < len(player) else '—'
+        msg += f"**{field}:** {value}\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def show_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать все активные цели (охотник -> цель)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Только для админа.")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT p1.full_name, p2.full_name
+        FROM targets t
+        JOIN players p1 ON t.hunter_id = p1.user_id
+        JOIN players p2 ON t.target_id = p2.user_id
+        WHERE t.is_active = 1
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        await update.message.reply_text("Нет активных целей.")
+        return
+    msg = "🔍 **Текущие охоты:**\n\n"
+    for hunter, target in rows:
+        msg += f"• {hunter} → {target}\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def armageddon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Режим Армагедон: каждой цели добавляется вторая цель (цель его жертвы)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Только для админа.")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Получаем всех живых охотников, у которых есть активная цель
+    cursor.execute('''
+        SELECT DISTINCT hunter_id
+        FROM targets
+        WHERE is_active = 1
+    ''')
+    hunters = [row[0] for row in cursor.fetchall()]
+    added = 0
+    for hunter_id in hunters:
+        # Находим первую (или единственную) цель охотника
+        cursor.execute('''
+            SELECT target_id
+            FROM targets
+            WHERE hunter_id = ? AND is_active = 1
+            LIMIT 1
+        ''', (hunter_id,))
+        row = cursor.fetchone()
+        if not row:
+            continue
+        primary_target = row[0]
+        # Находим цель этой цели (т.е. на кого охотится его жертва)
+        cursor.execute('''
+            SELECT target_id
+            FROM targets
+            WHERE hunter_id = ? AND is_active = 1
+            LIMIT 1
+        ''', (primary_target,))
+        row2 = cursor.fetchone()
+        if not row2:
+            continue
+        secondary_target = row2[0]
+        # Проверяем, не является ли secondary_target уже целью этого охотника
+        cursor.execute('''
+            SELECT 1 FROM targets
+            WHERE hunter_id = ? AND target_id = ? AND is_active = 1
+        ''', (hunter_id, secondary_target))
+        if cursor.fetchone():
+            continue  # уже есть
+        # Добавляем вторую цель
+        cursor.execute('''
+            INSERT INTO targets (hunter_id, target_id, kill_code, is_active)
+            VALUES (?, ?, ?, 1)
+        ''', (hunter_id, secondary_target, generate_kill_code()))
+        added += 1
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"✅ Армагедон активирован! Добавлено {added} дополнительных целей.")
+
+async def edit_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактировать поле игрока."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Только для админа.")
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text("Использование: /edit_player <user_id> <поле> <новое_значение>")
+        return
+    try:
+        user_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("user_id должен быть числом.")
+        return
+    field = args[1].lower()
+    new_value = ' '.join(args[2:])
+    allowed_fields = ['full_name', 'course', 'academic_group', 'social_links', 'about_self',
+                      'buildings', 'dormitory', 'photo_id', 'habits', 'personal_code']
+    if field not in allowed_fields:
+        await update.message.reply_text(f"Допустимые поля: {', '.join(allowed_fields)}")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE players SET {field} = ? WHERE user_id = ?", (new_value, user_id))
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    if affected:
+        await update.message.reply_text(f"✅ Поле {field} обновлено для user_id {user_id}.")
+    else:
+        await update.message.reply_text("❌ Игрок не найден.")
+
+async def set_reward_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить награду за убийство."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Только для админа.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /set_reward <число>")
+        return
+    try:
+        reward = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Введите число.")
+        return
+    set_reward(reward)
+    await update.message.reply_text(f"✅ Награда за убийство установлена: {reward}.")
+
+# --- НОВЫЕ ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ ---
+
+async def msg_killer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправить сообщение своему киллеру."""
+    user_id = update.effective_user.id
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Находим киллера (того, кто имеет этого пользователя целью)
+    cursor.execute('''
+        SELECT hunter_id
+        FROM targets
+        WHERE target_id = ? AND is_active = 1
+    ''', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text("❌ У вас нет активного киллера (или вы уже мертвы).")
+        return
+    killer_id = row[0]
+    text = ' '.join(context.args)
+    if not text:
+        await update.message.reply_text("Напишите сообщение: /msg_killer <текст>")
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=killer_id,
+            text=f"📩 Сообщение от вашей жертвы (анонимно):\n{text}"
+        )
+        await update.message.reply_text("✅ Сообщение отправлено вашему киллеру.")
+    except Exception as e:
+        logger.error(f"Не удалось отправить сообщение киллеру: {e}")
+        await update.message.reply_text("❌ Не удалось отправить сообщение.")
+
+async def msg_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправить сообщение своей жертве."""
+    user_id = update.effective_user.id
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Находим жертву (цель этого охотника)
+    cursor.execute('''
+        SELECT target_id
+        FROM targets
+        WHERE hunter_id = ? AND is_active = 1
+    ''', (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        await update.message.reply_text("❌ У вас нет активной цели.")
+        return
+    # Если несколько целей, отправляем всем
+    text = ' '.join(context.args)
+    if not text:
+        await update.message.reply_text("Напишите сообщение: /msg_target <текст>")
+        return
+    for (target_id,) in rows:
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"📩 Сообщение от вашего охотника (анонимно):\n{text}"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение жертве {target_id}: {e}")
+    await update.message.reply_text("✅ Сообщение отправлено вашей жертве.")
+
+# --- ИЗМЕНЁННАЯ КОМАНДА /target (показывает все цели) ---
+async def show_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    game_state = await get_game_state()
+    if not game_state['started']:
+        await update.message.reply_text("Игра еще не началась!")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT p.full_name, p.course, p.academic_group, p.social_links, p.about_self,
+               p.buildings, p.dormitory, p.photo_id
+        FROM targets t
+        JOIN players p ON t.target_id = p.user_id
+        WHERE t.hunter_id = ? AND t.is_active = 1
+    ''', (user.id,))
+    targets = cursor.fetchall()
+    conn.close()
+    if not targets:
+        await update.message.reply_text("У тебя нет активных целей.")
+        return
+    for target in targets:
+        (full_name, course, group, social, about, buildings, dorm, photo_id) = target
+        target_info = (
+            f"🔫 **Твоя цель:**\n\n"
+            f"**Имя:** {full_name}\n"
+            f"**Курс:** {course}\n"
+            f"**Группа:** {group}\n"
+            f"**Соцсети:** {social}\n"
+            f"**О себе:** {about}\n"
+            f"**Корпуса:** {buildings}\n"
+            f"**Общежитие/район:** {dorm}\n\n"
+            f"Когда встретишь цель, она должна сообщить тебе свой личный код.\n"
+            f"Введи его командой /kill после убийства."
+        )
+        await context.bot.send_photo(
+            chat_id=user.id,
+            photo=photo_id,
+            caption=target_info,
+            parse_mode='Markdown'
+        )
+
+# --- ИЗМЕНЁННАЯ ЛОГИКА /kill (поддержка нескольких целей) ---
+async def kill_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    game_state = await get_game_state()
+    if not game_state['started']:
+        await update.message.reply_text("Игра еще не началась!")
+        return ConversationHandler.END
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT target_id, personal_code
+        FROM targets t
+        JOIN players p ON t.target_id = p.user_id
+        WHERE t.hunter_id = ? AND t.is_active = 1
+    ''', (user.id,))
+    targets = cursor.fetchall()
+    conn.close()
+    if not targets:
+        await update.message.reply_text("У тебя нет активных целей!")
+        return ConversationHandler.END
+
+    # Сохраняем список целей для проверки кода
+    context.user_data['targets'] = targets
+    await update.message.reply_text(
+        "Введи личный код жертвы, которую хочешь убить:"
+    )
+    return KILL_CONFIRMATION
+
+async def confirm_kill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    entered_code = update.message.text.strip().upper()
+    targets = context.user_data.get('targets', [])
+    if not targets:
+        await update.message.reply_text("Что-то пошло не так. Попробуй снова.")
+        return ConversationHandler.END
+
+    # Ищем цель с таким кодом
+    victim_id = None
+    for target_id, code in targets:
+        if code == entered_code:
+            victim_id = target_id
+            break
+
+    if not victim_id:
+        await update.message.reply_text("Неверный код! Попробуй еще раз.")
+        return KILL_CONFIRMATION
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Проверяем, что жертва жива
+    cursor.execute("SELECT full_name, is_alive FROM players WHERE user_id = ?", (victim_id,))
+    victim = cursor.fetchone()
+    if not victim or not victim[1]:
+        await update.message.reply_text("Эта цель уже мертва.")
+        conn.close()
+        return ConversationHandler.END
+
+    victim_name = victim[0]
+    # --- Регистрируем убийство ---
+    cursor.execute('''
+        INSERT INTO kills (hunter_id, victim_id, kill_code)
+        VALUES (?, ?, ?)
+    ''', (user.id, victim_id, entered_code))
+    cursor.execute('''
+        UPDATE players SET kills = kills + 1 WHERE user_id = ?
+    ''', (user.id,))
+    cursor.execute('''
+        UPDATE players SET is_alive = 0 WHERE user_id = ?
+    ''', (victim_id,))
+
+    # Удаляем убитую цель из списка охотника
+    cursor.execute('''
+        DELETE FROM targets
+        WHERE hunter_id = ? AND target_id = ?
+    ''', (user.id, victim_id))
+
+    # Добавляем цель убитого (если она есть и жива)
+    cursor.execute('''
+        SELECT target_id
+        FROM targets
+        WHERE hunter_id = ? AND is_active = 1
+        LIMIT 1
+    ''', (victim_id,))
+    new_target_row = cursor.fetchone()
+    if new_target_row:
+        new_target_id = new_target_row[0]
+        # Проверяем, не является ли эта цель уже целью охотника
+        cursor.execute('''
+            SELECT 1 FROM targets
+            WHERE hunter_id = ? AND target_id = ? AND is_active = 1
+        ''', (user.id, new_target_id))
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO targets (hunter_id, target_id, kill_code, is_active)
+                VALUES (?, ?, ?, 1)
+            ''', (user.id, new_target_id, generate_kill_code()))
+
+    conn.commit()
+    conn.close()
+
+    # Начисляем награду
+    reward = get_reward()
+    # (можно записать в отдельную таблицу, но пока просто уведомление)
+    await update.message.reply_text(
+        f"🎯 Ты успешно убил {victim_name}! Получена награда: {reward}."
+    )
+
+    # Проверяем окончание игры
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM players WHERE is_alive = 1")
+    alive_count = cursor.fetchone()[0]
+    conn.close()
+    if alive_count <= 2:
+        await end_game_logic(context.bot)
+
+    return ConversationHandler.END
+
+# --- УДАЛЯЕМ КОМАНДУ /assign_targets (просто закомментируем) ---
+# async def assign_targets(...): ...
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ (start, register, ...) ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ ---
+# Обработчики команд
 # ------------------------------------------------------------
-# Основная функция
-# ------------------------------------------------------------
-def main() -> None:
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    game_state = await get_game_state()
+
+    if game_state['started']:
+        await update.message.reply_text(
+            f"Игра уже началась! Ты опоздал, {user.first_name}.\n"
+            "Но ты можешь следить за статистикой с помощью /stats"
+        )
+        return
+
+    await update.message.reply_text(
+    f"Привет, {user.first_name}!\n"
+    "Это бот для игры 'Киллер'.\n\n"
+    "1. Игра организуется на принципе честной игры! Каждый игрок обязуется соблюдать её правила. При их нарушении игрок выбрасывается из игры.\n"
+    "2. Суть игры заключается в охоте за жертвой. Каждый участник является одновременно и охотником и жертвой.\n"
+    "3. Игра начинается для всех одновременно! Вы получаете досье на свою жертву. В каждом досье находится фотография жертвы и краткое описание её привычек. Эта информация может помочь вам как охотнику выследить жертву. В то же самое время кто-то получает ваше досье и начинает охоту на вас.\n"
+    "4. Жертва считается убитой, если охотник выстрелил в неё из пальца, находясь в закрытом помещении один на один, или на улице, где в радиусе 20 метров никого нет. Нельзя убивать при свидетелях - будь то участник игры или просто посторонний человек.\n"
+    "5. После смерти жертва должна передать охотнику секретный пароль. Охотник должен ввести, полученный пароль в ТГ-бот и получить новую жертву.\n"
+    "6. В случае если охотник и жертва охотятся друг на друга, они должны обратиться к организаторам для того, чтобы получить новую жертву.\n"
+    "7. Игра заканчивается тогда, когда остаются только два участника. Либо вышло время, отведённое на игру. Побеждает охотник, который убил наибольшее количество жертв.\n\n"
+    "Чтобы зарегистрироваться, используй /register"
+)
+
+
+async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    game_state = await get_game_state()
+    if game_state['started']:
+        await update.message.reply_text("Регистрация закрыта, игра уже началась!")
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "📋 Регистрация в игре 'Киллер'.\n"
+        "Пожалуйста, введи своё полное имя (ФИО или ФИ):"
+    )
+    return FIO
+
+# 1. ФИО
+async def get_fio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['full_name'] = update.message.text
+    await update.message.reply_text("Введи свой курс (например, '3 курс', 'преподаватель' или др):")
+    return COURSE
+
+# 2. Курс
+async def get_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['course'] = update.message.text
+    await update.message.reply_text("Введи свою академическую группу (например эиф-103/6):")
+    return GROUP
+
+# 3. Группа
+async def get_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['academic_group'] = update.message.text
+    await update.message.reply_text(
+        "Укажи ссылки на свои соцсети (ВК, Telegram)\n"
+    )
+    return SOCIAL
+
+# 4. Соцсети
+async def get_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['social_links'] = update.message.text
+    await update.message.reply_text(
+        "Расскажи немного о себе: где ты обычно обитаешь, твой примерный маршрут на день, любимые места.\n"
+        "Это поможет охотнику тебя найти."
+    )
+    return ABOUT
+
+# 5. О себе
+async def get_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['about_self'] = update.message.text
+    await update.message.reply_text(
+        "В каких корпусах у тебя обычно проходят пары?"
+    )
+    return BUILDINGS
+
+# 6. Корпуса
+async def get_buildings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['buildings'] = update.message.text
+    await update.message.reply_text(
+        "Ты живешь в общаге? Если да, укажи корпус.\n"
+        "Если нет, напиши 'нет' или укажи примерный район проживания."
+    )
+    return DORM
+
+# 7. Общежитие
+async def get_dorm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['dormitory'] = update.message.text
+    await update.message.reply_text(
+        "Теперь загрузи своё фото (оно будет в досье для охотника)."
+    )
+    return PHOTO
+
+# 8. Фото и завершение регистрации
+async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    photo_file = await update.message.photo[-1].get_file()
+    context.user_data['photo_id'] = photo_file.file_id
+
+    # Личный код
+    personal_code = generate_personal_code()
+
+    # Сохранение в БД
+    conn = sqlite3.connect('killer_game.db')
+    cursor = conn.cursor()
+
+    # Проверка на повторную регистрацию
+    cursor.execute("SELECT user_id FROM players WHERE user_id = ?", (update.effective_user.id,))
+    if cursor.fetchone():
+        await update.message.reply_text("Ты уже зарегистрирован! Если хочешь обновить данные, сначала обратись к администратору.")
+        conn.close()
+        return ConversationHandler.END
+
+    cursor.execute('''
+        INSERT INTO players 
+        (user_id, username, full_name, course, academic_group, social_links, about_self, buildings, dormitory, photo_id, personal_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        update.effective_user.id,
+        update.effective_user.username,
+        context.user_data['full_name'],
+        context.user_data['course'],
+        context.user_data['academic_group'],
+        context.user_data['social_links'],
+        context.user_data['about_self'],
+        context.user_data['buildings'],
+        context.user_data['dormitory'],
+        context.user_data['photo_id'],
+        personal_code
+    ))
+
+    conn.commit()
+    conn.close()
+
+    # Отправка подтверждения
+    await update.message.reply_text(
+        f"✅ Регистрация завершена! Ты в игре.\n"
+        f"🔐 Твой личный секретный код: {personal_code}\n\n"
+        "Запомни его! Ты должен будешь передать его охотнику, если он тебя убьёт.\n"
+        "Ожидай начала. Когда игра начнется, ты получишь свою первую цель.\n\n"
+        "Ты можешь проверить свои данные с помощью /me"
+    )
+
+    # Уведомление админу
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📝 Новый участник!\nИмя: {context.user_data['full_name']}\nГруппа: {context.user_data['academic_group']}\nКод: {personal_code}\nID: {update.effective_user.id}"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить уведомление админу: {e}")
+
+    return ConversationHandler.END
+
+# Функция отмены
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Регистрация отменена.")
+    return ConversationHandler.END
+
+# --- MAIN ---
+def main():
     application = Application.builder().token(BOT_TOKEN).build()
     init_db()
 
     # Регистрация
     conv_handler = ConversationHandler(
-    entry_points=[CommandHandler('register', register)],
-    states={
-        FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fio)],
-        COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_course)],
-        GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group)],
-        SOCIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_social)],
-        ABOUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_about)],
-        BUILDINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buildings)],
-        DORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_dorm)],
-        PHOTO: [MessageHandler(filters.PHOTO, get_photo)],
-    },
-    fallbacks=[CommandHandler('cancel', cancel)],
-)
+        entry_points=[CommandHandler('register', register)],
+        states={
+            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fio)],
+            COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_course)],
+            GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group)],
+            SOCIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_social)],
+            ABOUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_about)],
+            BUILDINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buildings)],
+            DORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_dorm)],
+            PHOTO: [MessageHandler(filters.PHOTO, get_photo)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
 
-    # Обработчик убийства
     kill_handler = ConversationHandler(
         entry_points=[CommandHandler('kill', kill_target)],
         states={
@@ -957,7 +1139,7 @@ def main() -> None:
         fallbacks=[],
     )
 
-    # Регистрация обработчиков
+    # Обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(kill_handler)
@@ -965,20 +1147,30 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", show_stats))
     application.add_handler(CommandHandler("me", show_me))
 
-    # Административные команды
+    # Админ-команды
     application.add_handler(CommandHandler("start_game", start_game))
     application.add_handler(CommandHandler("end_game", end_game))
     application.add_handler(CommandHandler("reset_game", reset_game))
     application.add_handler(CommandHandler("list_players", list_players))
-    application.add_handler(CommandHandler("assign_targets", assign_targets))
+    # application.add_handler(CommandHandler("assign_targets", assign_targets))  # УДАЛЕНО
     application.add_handler(CommandHandler("add_player", add_player))
     application.add_handler(CommandHandler("remove_player", remove_player))
     application.add_handler(CommandHandler("set_time", set_time))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("status", status))
 
-    # Запуск
+    # Новые админ-команды
+    application.add_handler(CommandHandler("view_profile", view_profile))
+    application.add_handler(CommandHandler("show_targets", show_targets))
+    application.add_handler(CommandHandler("armageddon", armageddon))
+    application.add_handler(CommandHandler("edit_player", edit_player))
+    application.add_handler(CommandHandler("set_reward", set_reward_command))
+
+    # Новые пользовательские команды
+    application.add_handler(CommandHandler("msg_killer", msg_killer))
+    application.add_handler(CommandHandler("msg_target", msg_target))
+
     application.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
