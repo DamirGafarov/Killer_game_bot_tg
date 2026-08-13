@@ -1,1 +1,1 @@
-worker: python killer.py
+worker: python bot.py
