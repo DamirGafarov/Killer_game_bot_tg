@@ -7,10 +7,10 @@ BTN_TARGET = "🎯 Моя цель"
 BTN_KILL = "🔫 Убить жертву"
 BTN_ME = "👤 Моё досье"
 BTN_STATS = "📊 Статистика"
-BTN_TOP = "🏆 Топ игроков"
-BTN_GRAVEYARD = "🪦 Кладбище"
+BTN_TOP = "🏆 Топ киллеров"
 BTN_MSG_KILLER = "✉️ Письмо киллеру"
 BTN_MSG_TARGET = "✉️ Письмо жертве"
+BTN_MSG_ANY = "💰 Письмо игроку (1 очко)"
 BTN_RULES = "📖 Правила"
 BTN_HELP = "❓ Помощь"
 BTN_LAST_WORDS = "🕯 Последнее слово"
@@ -24,12 +24,16 @@ BTN_BACK = "⬅ Назад"
 BTN_CANCEL = "❌ Отмена"
 BTN_SKIP = "⏭ Пропустить"
 
+# --- Подписи для платного анонимного письма "любому игроку" ---
+BTN_SIGN_KILLER = "🔫 От киллера"
+BTN_SIGN_VICTIM = "💀 От жертвы"
+
 # --- Админ ---
 BTN_ADMIN = "🛠 Админ-панель"
 
 ALL_MENU_BUTTONS = [
-    BTN_TARGET, BTN_KILL, BTN_ME, BTN_STATS, BTN_TOP, BTN_GRAVEYARD,
-    BTN_MSG_KILLER, BTN_MSG_TARGET, BTN_RULES, BTN_HELP, BTN_LAST_WORDS,
+    BTN_TARGET, BTN_KILL, BTN_ME, BTN_STATS, BTN_TOP,
+    BTN_MSG_KILLER, BTN_MSG_TARGET, BTN_MSG_ANY, BTN_RULES, BTN_HELP, BTN_LAST_WORDS,
     BTN_REGISTER, BTN_CANCEL_REG, BTN_ADMIN,
 ]
 
@@ -43,7 +47,7 @@ def remove_kb() -> ReplyKeyboardRemove:
 
 
 def guest_menu(registration_open: bool = True) -> ReplyKeyboardMarkup:
-    """Меню для незарегистрированного пользователя."""
+    """Клавиатура для незарегистрированного пользователя."""
     rows = []
     if registration_open:
         rows.append([BTN_REGISTER])
@@ -66,12 +70,13 @@ def lobby_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
 
 
 def game_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    """Меню живого игрока во время игры."""
+    """Меню живого игрока во время игры. Кладбища здесь нет намеренно —
+    игроки не должны знать, кто выбыл."""
     rows = [
         [BTN_TARGET, BTN_KILL],
         [BTN_ME, BTN_STATS],
         [BTN_MSG_KILLER, BTN_MSG_TARGET],
-        [BTN_TOP, BTN_GRAVEYARD],
+        [BTN_MSG_ANY, BTN_TOP],
         [BTN_RULES, BTN_HELP],
     ]
     if is_admin:
@@ -80,12 +85,12 @@ def game_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
 
 
 def dead_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    """Меню выбывшего игрока."""
+    """Меню выбывшего игрока. Кладбища тоже нет — выбывший не должен
+    видеть общий список погибших."""
     rows = [
         [BTN_STATS, BTN_TOP],
-        [BTN_ME, BTN_GRAVEYARD],
-        [BTN_LAST_WORDS, BTN_RULES],
-        [BTN_HELP],
+        [BTN_ME, BTN_LAST_WORDS],
+        [BTN_RULES, BTN_HELP],
     ]
     if is_admin:
         rows.append([BTN_ADMIN])
@@ -105,3 +110,8 @@ def cancel_only() -> ReplyKeyboardMarkup:
 
 def confirm_cancel_reg() -> ReplyKeyboardMarkup:
     return kb([[BTN_CANCEL_REG_YES], [BTN_CANCEL_REG_NO]])
+
+
+def sign_choice() -> ReplyKeyboardMarkup:
+    """Выбор подписи отправителя для платного анонимного письма."""
+    return kb([[BTN_SIGN_KILLER, BTN_SIGN_VICTIM], [BTN_CANCEL]])

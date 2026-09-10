@@ -1,6 +1,6 @@
 """
-Локальный тест игровой логики (назначение целей, убийства) без PostgreSQL.
-Подменяет функции модуля db на sqlite-совместимую реализацию.
+Локальный тест игровой логики (назначение целей, убийства, топ киллеров, письма)
+без PostgreSQL. Подменяет функции модуля db на sqlite-совместимую реализацию.
 Запуск: python test_flow.py
 """
 import asyncio
@@ -14,6 +14,7 @@ os.environ.setdefault("ADMIN_IDS", "999")
 
 import db  # noqa: E402
 import bot  # noqa: E402
+import keyboards as K  # noqa: E402
 
 CONN = sqlite3.connect(":memory:")
 CONN.row_factory = sqlite3.Row
@@ -62,6 +63,8 @@ def _set_setting(key, value):
 
 
 db.set_setting = _set_setting
+# TOP_KILLERS_SQL использует коррелированный подзапрос — sqlite это тоже понимает после tr()
+bot.TOP_KILLERS_SQL = tr(bot.TOP_KILLERS_SQL)
 
 
 def init():
@@ -89,6 +92,7 @@ class FakeBot:
 class FakeCtx:
     def __init__(self):
         self.bot = FakeBot()
+        self.user_data = {}
 
 
 async def main():
@@ -120,6 +124,23 @@ async def main():
     assert bot.alive_count() == 4
     print("✓ убийство и наследование цели")
 
+    # Килл-фид игрокам НЕ рассылается — они не должны знать, КТО выбыл (имя).
+    # Сообщение с именем выбывшего допустимо только админу (id=999).
+    # Сообщение «Твоя цель выбыла» без имени — нормально, его исключаем из проверки.
+    player_msgs = [t for cid, t in ctx.bot.sent if cid != 999 and isinstance(t, str)]
+    leak = [
+        t for t in player_msgs
+        if "выбыл" in t
+        and "твоя цель" not in t.lower()
+        and "тебя устранили" not in t.lower()
+        and "ты выбыл" not in t.lower()
+    ]
+    assert not leak, f"игрокам не должно приходить имя выбывшего: {leak}"
+    assert any("Тебя устранили" in t for _, t in ctx.bot.sent)
+    admin_msgs_kill = [t for cid, t in ctx.bot.sent if cid == 999]
+    assert any("Убийство" in t or "Выбыл" in t for t in admin_msgs_kill), "админ должен знать об убийстве"
+    print("✓ килл-фид скрыт от игроков, жертва уведомлена лично, админ видит всё")
+
     # цепочка до 2 живых -> авто-финал
     await bot.register_kill(ctx, hunter_id=1, victim_id=3, code="CODE3")
     await bot.check_game_over(ctx)
@@ -130,9 +151,10 @@ async def main():
     assert not bot.game_started(), "игра должна завершиться при 2 выживших"
     print("✓ автозавершение при двух выживших")
 
-    top = db.fetch_all("SELECT full_name, points FROM players ORDER BY points DESC LIMIT 1")
-    assert top[0]["full_name"] == "Аня" and top[0]["points"] == 9, dict(top[0])
-    print("✓ очки:", dict(top[0]))
+    # Топ киллеров: Аня (id=1) убила 3 раза, должна быть на первом месте
+    top = db.fetch_all(bot.TOP_KILLERS_SQL, (5,))
+    assert top[0]["full_name"] == "Аня" and top[0]["kills"] == 3, dict(top[0])
+    print("✓ топ киллеров (сортировка по числу убийств):", dict(top[0]))
 
     # досье строятся без ошибок
     p = bot.get_player(1)
@@ -141,10 +163,51 @@ async def main():
     assert "ПОЛНАЯ КАРТОЧКА" in bot.dossier_admin(p)
     print("✓ тексты досье (охотник / игрок / админ)")
 
-    # kill-feed и уведомления ушли
-    assert any("Ещё один выбыл" in t for _, t in ctx.bot.sent)
-    assert any("Тебя устранили" in t for _, t in ctx.bot.sent)
-    print("✓ уведомления: килл-фид, жертва, админ")
+    # --- Платное письмо любому живому игроку ---
+    # Аня (1) имеет 9 очков (2+3+4), пишет живому игроку 5 (Дима) за 1 очко
+    balance_before = bot.get_player(1)["points"]
+    ctx2 = FakeCtx()
+    ctx2.user_data["msg_any_to"] = 5
+    ctx2.user_data["msg_any_to_name"] = "Дима"
+    ctx2.user_data["msg_any_sign"] = "killer"
+
+    class FakeMsg:
+        def __init__(self, text, sink):
+            self.text = text
+            self.photo = None
+            self.caption = None
+            self._sink = sink
+        async def reply_text(self, text, **kw):
+            self._sink.append(("reply", text))
+
+    class FakeUpdate:
+        def __init__(self, uid, text, sink):
+            self.effective_user = type("U", (), {"id": uid})()
+            self.message = FakeMsg(text, sink)
+
+    replies2 = []
+    upd = FakeUpdate(1, "Тайное сообщение", replies2)
+    await bot.msg_any_send(upd, ctx2)
+    balance_after = bot.get_player(1)["points"]
+    assert balance_after == balance_before - 1, (balance_before, balance_after)
+    assert any("Платное анонимное письмо" in t for _, t in ctx2.bot.sent)
+    admin_msgs = [t for cid, t in ctx2.bot.sent if cid == 999]
+    assert any("Копия платного письма" in t and "Аня" in t and "Дима" in t for t in admin_msgs), \
+        "админ должен получить копию с реальными именами"
+    print("✓ платное письмо: списание очка + доставка + копия админу с реальными именами")
+
+    # Нехватка средств
+    _execute("UPDATE players SET points = 0 WHERE user_id = 1")
+    ctx3 = FakeCtx()
+    ctx3.user_data["msg_any_to"] = 5
+    ctx3.user_data["msg_any_to_name"] = "Дима"
+    ctx3.user_data["msg_any_sign"] = "victim"
+    replies3 = []
+    upd3 = FakeUpdate(1, "Ещё письмо", replies3)
+    await bot.msg_any_send(upd3, ctx3)
+    assert any("Не хватает средств" in t for _, t in replies3)
+    print("✓ при нехватке очков покупка блокируется с понятным сообщением")
+
     print("\nВСЕ ТЕСТЫ ПРОЙДЕНЫ")
 
 

@@ -56,6 +56,9 @@ MSG_TEXT = 20
 CANCEL_REG_CONFIRM = 30
 LAST_WORDS = 40
 ADMIN_PHOTO = 50
+MSG_ANY_RECIPIENT = 60
+MSG_ANY_SIGN = 61
+MSG_ANY_TEXT = 62
 
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -72,7 +75,9 @@ RULES_TEXT = (
     "и получает новую жертву.\n"
     "6. Если охотник и жертва охотятся друг на друга — обратитесь к организаторам.\n"
     "7. Игра заканчивается, когда остаются два участника, или когда истекает время. "
-    "Победитель — тот, кто набрал больше всего очков.\n"
+    "Победитель — тот, у кого больше всего убийств. При равенстве выше тот, чьи жертвы сами успели больше убить, а если и так равно — кто раньше совершил своё последнее убийство.\n"
+    "8. За каждое убийство начисляются очки (награда за жертву). Очки можно потратить на анонимное письмо любому живому игроку (1 очко = 1 письмо). Своему охотнику и своей жертве можно писать бесплатно.\n"
+    "9. Список выбывших игрокам не показывается — кто выбыл, знают только организатор.\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -164,6 +169,24 @@ async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
     except TelegramError as e:
         logger.warning("Не доставлено %s: %s", chat_id, e)
         return False
+
+
+async def notify_admins_message(context: ContextTypes.DEFAULT_TYPE, text: str, photo_id: str | None = None) -> None:
+    """Копия письма/фото админам — с реальными именами, не анонимно."""
+    for admin_id in ADMIN_IDS:
+        if not admin_id:
+            continue
+        try:
+            if photo_id:
+                if len(text) <= 1000:
+                    await context.bot.send_photo(chat_id=admin_id, photo=photo_id, caption=text)
+                else:
+                    await context.bot.send_photo(chat_id=admin_id, photo=photo_id, caption=text[:1000] + "…")
+                    await context.bot.send_message(chat_id=admin_id, text=text)
+            else:
+                await context.bot.send_message(chat_id=admin_id, text=text)
+        except TelegramError as e:
+            logger.warning("Не удалось переслать письмо админу %s: %s", admin_id, e)
 
 
 def pressed_menu_button(text: str) -> bool:
@@ -357,10 +380,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• {K.BTN_KILL} — ввести код убитой жертвы\n"
         f"• {K.BTN_ME} — твоя анкета и личный код\n"
         f"• {K.BTN_STATS} — статистика игры\n"
-        f"• {K.BTN_TOP} — таблица лидеров\n"
-        f"• {K.BTN_GRAVEYARD} — кладбище выбывших\n"
-        f"• {K.BTN_MSG_KILLER} / {K.BTN_MSG_TARGET} — анонимная записка\n"
+        f"• {K.BTN_TOP} — топ игроков по числу убийств\n"
+        f"• {K.BTN_MSG_KILLER} / {K.BTN_MSG_TARGET} — анонимная записка своему охотнику/жертве, бесплатно, можно с фото\n"
+        f"• {K.BTN_MSG_ANY} — анонимное письмо любому живому игроку за 1 очко (только текст)\n"
         f"• {K.BTN_CANCEL_REG} — выйти из игры до её начала\n\n"
+        "Кто выбыл из игры — видно только организаторам.\n\n"
         "Если клавиатура пропала — отправь /start."
     )
     if is_admin(user_id):
@@ -669,35 +693,48 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines), reply_markup=menu_for(user_id))
 
 
+TOP_KILLERS_SQL = """
+    SELECT p.user_id, p.full_name, p.kills, p.points, p.last_kill_date,
+           COALESCE((
+               SELECT SUM(v.kills) FROM players v WHERE v.killed_by = p.user_id
+           ), 0) AS victims_kills_sum
+    FROM players p
+    ORDER BY p.kills DESC, victims_kills_sum DESC,
+             p.last_kill_date ASC NULLS LAST, p.full_name
+    LIMIT %s
+"""
+
+
 async def show_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    rows = db.fetch_all(
-        "SELECT full_name, kills, points, is_alive FROM players "
-        "ORDER BY points DESC, kills DESC, full_name LIMIT 15"
-    )
+    rows = db.fetch_all(TOP_KILLERS_SQL, (15,))
     if not rows:
         await update.message.reply_text("Пока никого нет.", reply_markup=menu_for(user_id))
         return
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["🏆 Таблица лидеров", ""]
+    lines = ["🏆 Топ киллеров", ""]
     for i, r in enumerate(rows, 1):
         mark = medals[i - 1] if i <= 3 else f"{i}."
-        status = "🟢" if r["is_alive"] else "🔴"
-        lines.append(f"{mark} {status} {r['full_name']} — {r['points']} очк. ({r['kills']} уб.)")
+        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб. ({r['points']} очк.)")
     await update.message.reply_text("\n".join(lines), reply_markup=menu_for(user_id))
 
 
 async def show_graveyard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кладбище видно ТОЛЬКО организаторам — игрокам не положено знать,
+    кто выбыл из игры."""
     user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Эта информация недоступна во время игры.", reply_markup=menu_for(user_id))
+        return
     rows = db.fetch_all(
         "SELECT p.full_name, p.death_date, p.last_words, k.full_name AS killer "
         "FROM players p LEFT JOIN players k ON k.user_id = p.killed_by "
-        "WHERE NOT p.is_alive ORDER BY p.death_date DESC NULLS LAST LIMIT 30"
+        "WHERE NOT p.is_alive ORDER BY p.death_date DESC NULLS LAST LIMIT 50"
     )
     if not rows:
         await update.message.reply_text("🪦 Кладбище пусто. Пока все живы.", reply_markup=menu_for(user_id))
         return
-    lines = ["🪦 Кладбище", ""]
+    lines = ["🪦 Кладбище (видно только админам)", ""]
     for r in rows:
         when = fmt_dt(r["death_date"])
         line = f"• {r['full_name']} — {when}"
@@ -799,7 +836,8 @@ async def register_kill(context: ContextTypes.DEFAULT_TYPE, hunter_id: int, vict
         (hunter_id, victim_id, code, reward),
     )
     db.execute(
-        "UPDATE players SET kills = kills + 1, points = points + %s WHERE user_id = %s",
+        "UPDATE players SET kills = kills + 1, points = points + %s, last_kill_date = NOW() "
+        "WHERE user_id = %s",
         (reward, hunter_id),
     )
     db.execute(
@@ -857,18 +895,8 @@ async def register_kill(context: ContextTypes.DEFAULT_TYPE, hunter_id: int, vict
     except TelegramError:
         pass
 
-    # Килл-фид
-    if killfeed_enabled():
-        alive = alive_count()
-        feed = (
-            f"💀 Ещё один выбыл: {victim['full_name']}.\n"
-            f"В живых осталось: {alive}."
-        )
-        for r in db.fetch_all("SELECT user_id FROM players WHERE is_alive"):
-            if r["user_id"] in (hunter_id,):
-                continue
-            await safe_send(context, r["user_id"], feed)
-
+    # Килл-фид игрокам больше не рассылается — они не должны знать, кто выбыл.
+    # Админы всегда получают сводку об убийстве ниже, независимо от killfeed_enabled().
     await notify_admins(
         context,
         "🔪 Убийство\n"
@@ -931,25 +959,22 @@ async def check_game_over(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def finish_game(context: ContextTypes.DEFAULT_TYPE, reason: str = "") -> None:
-    rows = db.fetch_all(
-        "SELECT user_id, full_name, kills, points, is_alive FROM players "
-        "ORDER BY points DESC, kills DESC"
-    )
+    rows = db.fetch_all(TOP_KILLERS_SQL, (10000,))
     db.set_setting("game_started", "False")
     db.execute("UPDATE targets SET is_active = FALSE")
 
     lines = ["🏁 Игра окончена."]
     if reason:
         lines.append(reason)
-    lines += ["", "Итоговая таблица:"]
+    lines += ["", "Итоговая таблица (по числу убийств):"]
     medals = ["🥇", "🥈", "🥉"]
     for i, r in enumerate(rows, 1):
         mark = medals[i - 1] if i <= 3 else f"{i}."
-        lines.append(f"{mark} {r['full_name']} — {r['points']} очк. ({r['kills']} уб.)")
+        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб. ({r['points']} очк.)")
     result = "\n".join(lines)
 
     for i, r in enumerate(rows, 1):
-        personal = f"🏁 Игра окончена.\nТвоё место: {i} из {len(rows)}\nОчков: {r['points']} ({r['kills']} уб.)\n\n"
+        personal = f"🏁 Игра окончена.\nТвоё место: {i} из {len(rows)}\nУбийств: {r['kills']} ({r['points']} очк.)\n\n"
         await safe_send(context, r["user_id"], personal + result, reply_markup=ReplyKeyboardRemove())
     await notify_admins(context, result)
 
@@ -958,6 +983,7 @@ async def finish_game(context: ContextTypes.DEFAULT_TYPE, reason: str = "") -> N
 # АНОНИМНЫЕ СООБЩЕНИЯ
 # ---------------------------------------------------------------------------
 async def msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Бесплатные письма своему охотнику/жертве. Могут содержать фото."""
     user_id = update.effective_user.id
     text = (update.message.text or "")
     to_killer = K.BTN_MSG_KILLER in text or "msg_killer" in text
@@ -973,7 +999,7 @@ async def msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return ConversationHandler.END
         context.user_data["msg_to"] = [row["hunter_id"]]
         context.user_data["msg_dir"] = "to_killer"
-        prompt = "Напиши анонимную записку своему охотнику:"
+        prompt = "Напиши анонимную записку своему охотнику (можно с фото):"
     else:
         rows = db.fetch_all("SELECT target_id FROM targets WHERE hunter_id = %s AND is_active", (user_id,))
         if not rows:
@@ -981,7 +1007,7 @@ async def msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return ConversationHandler.END
         context.user_data["msg_to"] = [r["target_id"] for r in rows]
         context.user_data["msg_dir"] = "to_target"
-        prompt = "Напиши анонимную записку своей жертве:"
+        prompt = "Напиши анонимную записку своей жертве (можно с фото):"
 
     await update.message.reply_text(prompt, reply_markup=K.cancel_only())
     return MSG_TEXT
@@ -989,25 +1015,48 @@ async def msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def msg_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    text = (update.message.text or "").strip()
-    if text == K.BTN_CANCEL or pressed_menu_button(text):
+    text = (update.message.text or update.message.caption or "").strip()
+    if text == K.BTN_CANCEL or (not update.message.photo and pressed_menu_button(text)):
         await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
         return ConversationHandler.END
     if len(text) > 800:
         text = text[:800]
 
+    photo_id = update.message.photo[-1].file_id if update.message.photo else None
+    if not text and not photo_id:
+        await update.message.reply_text("Нужен текст или фото. Попробуй ещё раз.")
+        return MSG_TEXT
+
     direction = context.user_data.get("msg_dir")
     header = "📩 Анонимная записка от твоей жертвы:" if direction == "to_killer" \
         else "📩 Анонимная записка от твоего охотника:"
+    sender = get_player(user_id)
+    sender_name = field(sender, "full_name", str(user_id)) if sender else str(user_id)
 
     delivered = 0
     for chat_id in context.user_data.get("msg_to", []):
-        if await safe_send(context, chat_id, f"{header}\n\n{text}"):
+        body = f"{header}\n\n{text}" if text else header
+        if photo_id:
+            ok = bool(await safe_send_photo(context, chat_id, photo_id, body))
+        else:
+            ok = await safe_send(context, chat_id, body)
+        if ok:
             delivered += 1
         db.execute(
-            "INSERT INTO anon_messages (from_id, to_id, direction, body) VALUES (%s,%s,%s,%s)",
-            (user_id, chat_id, direction, text),
+            "INSERT INTO anon_messages (from_id, to_id, direction, body, photo_id, is_paid) "
+            "VALUES (%s,%s,%s,%s,%s,FALSE)",
+            (user_id, chat_id, direction, text, photo_id),
         )
+        recipient = get_player(chat_id)
+        recipient_name = field(recipient, "full_name", str(chat_id)) if recipient else str(chat_id)
+        admin_copy = (
+            "✉️ Копия письма (бесплатно, не анонимно)\n"
+            f"От: {sender_name} ({user_id})\n"
+            f"Кому: {recipient_name} ({chat_id})\n"
+            f"Направление: {'жертва → киллер' if direction == 'to_killer' else 'киллер → жертва'}\n\n"
+            f"{text}"
+        )
+        await notify_admins_message(context, admin_copy, photo_id=photo_id)
 
     await update.message.reply_text(
         "✅ Записка доставлена." if delivered else "❌ Не удалось доставить записку.",
@@ -1015,6 +1064,181 @@ async def msg_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     context.user_data.pop("msg_to", None)
     context.user_data.pop("msg_dir", None)
+    return ConversationHandler.END
+
+
+async def safe_send_photo(context: ContextTypes.DEFAULT_TYPE, chat_id: int, photo_id: str, caption: str) -> bool:
+    try:
+        if len(caption) <= 1000:
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption)
+        else:
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption[:1000] + "…")
+            await context.bot.send_message(chat_id=chat_id, text=caption)
+        return True
+    except TelegramError as e:
+        logger.warning("Фото не доставлено %s: %s", chat_id, e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# ПЛАТНОЕ ПИСЬМО ЛЮБОМУ ЖИВОМУ ИГРОКУ (1 очко = 1 письмо)
+# ---------------------------------------------------------------------------
+MSG_ANY_PRICE = 1
+
+
+async def msg_any_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    player = get_player(user_id)
+    if not player or not game_started():
+        await update.message.reply_text("Игра не идёт.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+    if not player["is_alive"]:
+        await update.message.reply_text("Ты выбыл из игры.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    points = field(player, "points", 0) or 0
+    if points < MSG_ANY_PRICE:
+        await update.message.reply_text(
+            f"❌ Не хватает средств. Твой баланс: {points} очк. Цена письма: {MSG_ANY_PRICE} очк.",
+            reply_markup=menu_for(user_id),
+        )
+        return ConversationHandler.END
+
+    players = db.fetch_all(
+        "SELECT user_id, full_name FROM players WHERE is_alive AND user_id <> %s ORDER BY full_name",
+        (user_id,),
+    )
+    if not players:
+        await update.message.reply_text("Нет других живых игроков.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    context.user_data["msg_any_list"] = [(r["user_id"], r["full_name"]) for r in players]
+    lines = [f"💰 Письмо любому игроку стоит {MSG_ANY_PRICE} очк. Твой баланс: {points} очк.",
+             "", "Выбери получателя — напиши номер или имя из списка:", ""]
+    for i, (_, name) in enumerate(context.user_data["msg_any_list"], 1):
+        lines.append(f"{i}. {name}")
+    await update.message.reply_text("\n".join(lines), reply_markup=K.cancel_only())
+    return MSG_ANY_RECIPIENT
+
+
+async def msg_any_pick_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+    if text == K.BTN_CANCEL:
+        await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    options = context.user_data.get("msg_any_list", [])
+    chosen = None
+    if text.isdigit():
+        idx = int(text) - 1
+        if 0 <= idx < len(options):
+            chosen = options[idx]
+    if chosen is None:
+        matches = [o for o in options if o[1].lower() == text.lower()]
+        if not matches:
+            matches = [o for o in options if text.lower() in o[1].lower()]
+        if len(matches) == 1:
+            chosen = matches[0]
+
+    if chosen is None:
+        await update.message.reply_text("Не нашёл такого игрока однозначно. Попробуй ввести номер из списка.")
+        return MSG_ANY_RECIPIENT
+
+    context.user_data["msg_any_to"] = chosen[0]
+    context.user_data["msg_any_to_name"] = chosen[1]
+    await update.message.reply_text(
+        f"Получатель: {chosen[1]}.\nОт чьего имени отправить письмо?",
+        reply_markup=K.sign_choice(),
+    )
+    return MSG_ANY_SIGN
+
+
+async def msg_any_pick_sign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+    if text == K.BTN_CANCEL:
+        await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+    if text not in (K.BTN_SIGN_KILLER, K.BTN_SIGN_VICTIM):
+        await update.message.reply_text("Выбери одну из двух кнопок.", reply_markup=K.sign_choice())
+        return MSG_ANY_SIGN
+
+    context.user_data["msg_any_sign"] = "killer" if text == K.BTN_SIGN_KILLER else "victim"
+    await update.message.reply_text(
+        "Теперь напиши текст письма (только текст, без фото):",
+        reply_markup=K.cancel_only(),
+    )
+    return MSG_ANY_TEXT
+
+
+async def msg_any_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+    if text == K.BTN_CANCEL or pressed_menu_button(text):
+        await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+    if not text:
+        await update.message.reply_text("Нужен текст. Попробуй ещё раз.")
+        return MSG_ANY_TEXT
+    if len(text) > 800:
+        text = text[:800]
+
+    to_id = context.user_data.get("msg_any_to")
+    sign = context.user_data.get("msg_any_sign")
+    if not to_id:
+        await update.message.reply_text("Что-то пошло не так. Начни занова через «💰 Письмо игроку».", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    # Повторная проверка баланса непосредственно перед списанием — вдруг уже потратил в другом окне
+    fresh = get_player(user_id)
+    points = field(fresh, "points", 0) or 0
+    if points < MSG_ANY_PRICE:
+        await update.message.reply_text(
+            f"❌ Не хватает средств. Твой баланс: {points} очк.",
+            reply_markup=menu_for(user_id),
+        )
+        return ConversationHandler.END
+
+    rows_updated = db.execute(
+        "UPDATE players SET points = points - %s WHERE user_id = %s AND points >= %s",
+        (MSG_ANY_PRICE, user_id, MSG_ANY_PRICE),
+    )
+    if not rows_updated:
+        await update.message.reply_text("❌ Не хватает средств.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    sign_label = "🔫 от киллера" if sign == "killer" else "💀 от жертвы"
+    body = f"💰 Платное анонимное письмо ({sign_label}):\n\n{text}"
+    delivered = await safe_send(context, to_id, body)
+
+    db.execute(
+        "INSERT INTO anon_messages (from_id, to_id, direction, body, is_paid, sign) "
+        "VALUES (%s,%s,'to_any',%s,TRUE,%s)",
+        (user_id, to_id, text, sign),
+    )
+
+    sender = get_player(user_id)
+    sender_name = field(sender, "full_name", str(user_id)) if sender else str(user_id)
+    to_name = context.user_data.get("msg_any_to_name", str(to_id))
+    admin_copy = (
+        "💰 Копия платного письма (не анонимно)\n"
+        f"От: {sender_name} ({user_id})\n"
+        f"Кому: {to_name} ({to_id})\n"
+        f"Подпись получателю: {sign_label}\n"
+        f"Списано: {MSG_ANY_PRICE} очк.\n\n"
+        f"{text}"
+    )
+    await notify_admins_message(context, admin_copy)
+
+    await update.message.reply_text(
+        "✅ Письмо отправлено." if delivered else "⚠️ Очко списано, но доставить не удалось.",
+        reply_markup=menu_for(user_id),
+    )
+    context.user_data.pop("msg_any_list", None)
+    context.user_data.pop("msg_any_to", None)
+    context.user_data.pop("msg_any_to_name", None)
+    context.user_data.pop("msg_any_sign", None)
     return ConversationHandler.END
 
 
@@ -1044,7 +1268,7 @@ async def last_words_save(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
         return ConversationHandler.END
     db.execute("UPDATE players SET last_words = %s WHERE user_id = %s", (text[:200], user_id))
-    await update.message.reply_text("🕯 Записано. Смотри «🪦 Кладбище».", reply_markup=menu_for(user_id))
+    await update.message.reply_text("🕯 Записано. Организаторы увидят это в кладбище.", reply_markup=menu_for(user_id))
     return ConversationHandler.END
 
 
@@ -1068,7 +1292,7 @@ ADMIN_HELP = (
     "/reset_game — полный сброс данных\n"
     "/set_time <дни> — длительность игры\n"
     "/open_reg, /close_reg — регистрация\n"
-    "/killfeed on|off — рассылка о смертях\n"
+    "/killfeed on|off — уведомление админов о каждом убийстве (игрокам не рассылается)\n"
     "/status — техстатус\n\n"
     "Игроки:\n"
     "/list_players — список\n"
@@ -1708,12 +1932,12 @@ async def job_daily_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     alive = alive_count()
     kills = db.fetch_val("SELECT COUNT(*) FROM kills WHERE kill_date > NOW() - INTERVAL '24 hours'", default=0)
-    leader = db.fetch_one("SELECT full_name, points FROM players ORDER BY points DESC LIMIT 1")
+    leader = db.fetch_one("SELECT full_name, kills FROM players ORDER BY kills DESC, last_kill_date ASC NULLS LAST LIMIT 1")
     text = (
         "🗞 Сводка за сутки\n"
         f"Убийств: {kills}\n"
         f"В живых: {alive}\n"
-        + (f"Лидер: {leader['full_name']} — {leader['points']} очк." if leader else "")
+        + (f"Лидер: {leader['full_name']} — {leader['kills']} уб." if leader and leader["kills"] else "")
     )
     for r in db.fetch_all("SELECT user_id FROM players WHERE is_alive"):
         await safe_send(context, r["user_id"], text)
@@ -1804,7 +2028,7 @@ def build_application() -> Application:
         name="kill",
     )
 
-    # --- Анонимные записки ---
+    # --- Анонимные записки (бесплатно, своему охотнику/жертве, можно с фото) ---
     msg_conv = ConversationHandler(
         entry_points=[
             MessageHandler(btn(K.BTN_MSG_KILLER), msg_start),
@@ -1812,9 +2036,24 @@ def build_application() -> Application:
             CommandHandler("msg_killer", msg_start),
             CommandHandler("msg_target", msg_start),
         ],
-        states={MSG_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_send)]},
+        states={MSG_TEXT: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, msg_send)]},
         fallbacks=[],
         name="anon_messages",
+    )
+
+    # --- Платное письмо любому живому игроку (1 очко) ---
+    msg_any_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(btn(K.BTN_MSG_ANY), msg_any_start),
+            CommandHandler("msg_any", msg_any_start),
+        ],
+        states={
+            MSG_ANY_RECIPIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_any_pick_recipient)],
+            MSG_ANY_SIGN: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_any_pick_sign)],
+            MSG_ANY_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_any_send)],
+        },
+        fallbacks=[],
+        name="msg_any",
     )
 
     # --- Последнее слово ---
@@ -1841,7 +2080,7 @@ def build_application() -> Application:
         name="admin_set_photo",
     )
 
-    for conv in (reg_conv, cancel_reg_conv, kill_conv, msg_conv, last_words_conv, photo_conv):
+    for conv in (reg_conv, cancel_reg_conv, kill_conv, msg_conv, msg_any_conv, last_words_conv, photo_conv):
         app.add_handler(conv)
 
     # --- Базовые команды и кнопки ---
@@ -1852,13 +2091,12 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("me", show_me))
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CommandHandler("top", show_top))
-    app.add_handler(CommandHandler("graveyard", show_graveyard))
+    app.add_handler(CommandHandler("graveyard", show_graveyard))  # только для админов, проверка внутри show_graveyard
 
     app.add_handler(MessageHandler(btn(K.BTN_TARGET), show_target))
     app.add_handler(MessageHandler(btn(K.BTN_ME), show_me))
     app.add_handler(MessageHandler(btn(K.BTN_STATS), show_stats))
     app.add_handler(MessageHandler(btn(K.BTN_TOP), show_top))
-    app.add_handler(MessageHandler(btn(K.BTN_GRAVEYARD), show_graveyard))
     app.add_handler(MessageHandler(btn(K.BTN_RULES), cmd_rules))
     app.add_handler(MessageHandler(btn(K.BTN_HELP), cmd_help))
     app.add_handler(MessageHandler(btn(K.BTN_ADMIN), admin_panel))

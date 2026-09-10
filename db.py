@@ -156,7 +156,8 @@ SCHEMA = [
         is_danger         BOOLEAN NOT NULL DEFAULT FALSE,
         danger_reason     TEXT NOT NULL DEFAULT '',
         last_words        TEXT DEFAULT '',
-        killed_by         BIGINT
+        killed_by         BIGINT,
+        last_kill_date    TIMESTAMPTZ
     )
     """,
     """
@@ -196,6 +197,9 @@ SCHEMA = [
         to_id      BIGINT,
         direction  TEXT,
         body       TEXT,
+        photo_id   TEXT,
+        is_paid    BOOLEAN NOT NULL DEFAULT FALSE,
+        sign       TEXT DEFAULT '',
         sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
@@ -224,7 +228,11 @@ def init_db() -> None:
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS killed_by BIGINT",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS death_date TIMESTAMPTZ",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS habits TEXT DEFAULT ''",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_kill_date TIMESTAMPTZ",
             "ALTER TABLE kills ADD COLUMN IF NOT EXISTS points INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE anon_messages ADD COLUMN IF NOT EXISTS photo_id TEXT",
+            "ALTER TABLE anon_messages ADD COLUMN IF NOT EXISTS is_paid BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE anon_messages ADD COLUMN IF NOT EXISTS sign TEXT DEFAULT ''",
         ]
         for stmt in migrations:
             try:
