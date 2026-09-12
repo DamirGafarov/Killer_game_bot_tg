@@ -845,40 +845,41 @@ async def register_kill(context: ContextTypes.DEFAULT_TYPE, hunter_id: int, vict
         (hunter_id, victim_id),
     )
 
-    # Цели жертвы освобождаются
-    victim_targets = [
-        r["target_id"]
-        for r in db.fetch_all(
-            "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active", (victim_id,)
-        )
-    ]
+        # Цели жертвы освобождаются — запоминаем отдельно основную и доп.
+    victim_main_target = db.fetch_val(
+        "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active AND is_extra = FALSE",
+        (victim_id,),
+    )
+    victim_extra_target = db.fetch_val(
+        "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active AND is_extra = TRUE",
+        (victim_id,),
+    )
     db.execute("UPDATE targets SET is_active = FALSE WHERE hunter_id = %s", (victim_id,))
 
-    # Охотники, у которых жертва была целью (включая нашего)
-    other_hunters = [
-        r["hunter_id"]
-        for r in db.fetch_all(
-            "SELECT hunter_id FROM targets WHERE target_id = %s AND is_active", (victim_id,)
-        )
-    ]
+    # Охотники, у которых жертва была целью — с ролью (основная/доп), которой она у них была
+    hunters_of_victim = db.fetch_all(
+        "SELECT hunter_id, is_extra FROM targets WHERE target_id = %s AND is_active", (victim_id,)
+    )
     db.execute("UPDATE targets SET is_active = FALSE WHERE target_id = %s", (victim_id,))
 
     hunter = get_player(hunter_id)
 
-    # Наш охотник наследует цель жертвы
-    new_target_id = assign_target(hunter_id, preferred=victim_targets[0] if victim_targets else None)
-    if new_target_id is None:
-        await notify_admins(context, f"⚠️ Игроку {hunter_id} не удалось назначить новую цель автоматически.")
+    # Каждый охотник жертвы наследует цель жертвы с ИНВЕРТИРОВАННОЙ ролью:
+    # был основным охотником жертвы -> получает её ДОП. цель;
+    # был доп. охотником жертвы -> получает её ОСНОВНУЮ цель.
+    for row in hunters_of_victim:
+        h_id = row["hunter_id"]
+        was_extra = row["is_extra"]
+        new_preferred = victim_main_target if was_extra else victim_extra_target
+        new_is_extra = not was_extra  # инверсия роли у наследника
 
-    # Остальным охотникам жертвы — новые цели
-    for other in other_hunters:
-        if other == hunter_id:
-            continue
-        got = assign_target(other)
-        if got:
-            await safe_send(context, other, "🔄 Твоя цель выбыла из игры. Назначена новая — открой «🎯 Моя цель».")
+        got = assign_target(h_id, preferred=new_preferred, is_extra=new_is_extra)
+        if not got:
+            await notify_admins(context, f"⚠️ Охотнику {h_id} не удалось назначить новую цель автоматически.")
+        elif h_id == hunter_id:
+            continue  # убийце отдельное сообщение ниже по остальному коду функции, если оно у вас уже есть
         else:
-            await notify_admins(context, f"⚠️ Охотнику {other} не назначена новая цель.")
+            await safe_send(context, h_id, "🔄 Твоя цель выбыла из игры. Назначена новая — открой «🎯 Моя цель».")
 
     # Жертве
     await safe_send(
@@ -907,7 +908,7 @@ async def register_kill(context: ContextTypes.DEFAULT_TYPE, hunter_id: int, vict
     )
 
 
-def assign_target(hunter_id: int, preferred: int | None = None) -> int | None:
+def assign_target(hunter_id: int, preferred: int | None = None, is_extra: bool = False) -> int | None:
     """Назначает охотнику новую активную цель. Возвращает target_id или None."""
     def ok(candidate: int) -> bool:
         if not candidate or candidate == hunter_id:
@@ -944,9 +945,9 @@ def assign_target(hunter_id: int, preferred: int | None = None) -> int | None:
         return None
 
     db.execute(
-        "INSERT INTO targets (hunter_id, target_id, kill_code, is_active) VALUES (%s,%s,%s,TRUE) "
+        "INSERT INTO targets (hunter_id, target_id, kill_code, is_active, is_extra) VALUES (%s,%s,%s,TRUE,%s) "
         "ON CONFLICT DO NOTHING",
-        (hunter_id, candidate, gen_code()),
+        (hunter_id, candidate, gen_code(), is_extra),
     )
     return candidate
 
@@ -1802,18 +1803,18 @@ async def armageddon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if len(current) >= 2:
             continue
 
-        # Ищем "внука" по цепочке: цель текущей цели охотника.
+        # Ищем "внука" по цепочке: цель текущей (основной) цели охотника.
         grandchild_id = None
         if current:
             first_target = current[0]
             row = db.fetch_one(
-                "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active",
+                "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active AND is_extra = FALSE",
                 (first_target,),
             )
             if row:
                 grandchild_id = row["target_id"]
 
-        got = assign_target(hunter_id, preferred=grandchild_id)
+        got = assign_target(hunter_id, preferred=grandchild_id, is_extra=True)
         if got:
             added += 1
             await safe_send(context, hunter_id, "☄️ АРМАГЕДДОН. Тебе выдана вторая цель — открой «🎯 Моя цель».")
