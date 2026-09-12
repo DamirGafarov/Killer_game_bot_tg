@@ -162,18 +162,15 @@ SCHEMA = [
     """,
     """
     CREATE TABLE IF NOT EXISTS targets (
-        id            SERIAL PRIMARY KEY,
-        hunter_id     BIGINT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
-        target_id     BIGINT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
-        assigned_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        kill_code     TEXT,
-        is_active     BOOLEAN NOT NULL DEFAULT TRUE
+        id SERIAL PRIMARY KEY,
+        hunter_id BIGINT NOT NULL,
+        target_id BIGINT NOT NULL,
+        kill_code TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        is_extra BOOLEAN NOT NULL DEFAULT FALSE
     )
     """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS targets_active_pair_idx
-        ON targets (hunter_id, target_id) WHERE is_active
-    """,
+    "ALTER TABLE targets ADD COLUMN IF NOT EXISTS is_extra BOOLEAN NOT NULL DEFAULT FALSE",
     """
     CREATE TABLE IF NOT EXISTS kills (
         kill_id   SERIAL PRIMARY KEY,
