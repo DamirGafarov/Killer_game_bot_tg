@@ -1210,7 +1210,7 @@ async def msg_any_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
     sign_label = "твоего охотника" if sign == "killer" else "твоей жертвы"
-    body = f"📩 Анонимная записка от ({sign_label}):\n\n{text}"
+    body = f"📩 Анонимная записка от {sign_label}:\n\n{text}"
     delivered = await safe_send(context, to_id, body)
 
     db.execute(
