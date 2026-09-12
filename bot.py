@@ -1208,8 +1208,8 @@ async def msg_any_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("❌ Не хватает средств.", reply_markup=menu_for(user_id))
         return ConversationHandler.END
 
-    sign_label = "🔫 от киллера" if sign == "killer" else "💀 от жертвы"
-    body = f"💰 Платное анонимное письмо ({sign_label}):\n\n{text}"
+    sign_label = "твоего охотника" if sign == "killer" else "твоей жертвы"
+    body = f"📩 Анонимная записка от ({sign_label}):\n\n{text}"
     delivered = await safe_send(context, to_id, body)
 
     db.execute(
@@ -1801,7 +1801,19 @@ async def armageddon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active", (hunter_id,))]
         if len(current) >= 2:
             continue
-        got = assign_target(hunter_id)
+
+        # Ищем "внука" по цепочке: цель текущей цели охотника.
+        grandchild_id = None
+        if current:
+            first_target = current[0]
+            row = db.fetch_one(
+                "SELECT target_id FROM targets WHERE hunter_id = %s AND is_active",
+                (first_target,),
+            )
+            if row:
+                grandchild_id = row["target_id"]
+
+        got = assign_target(hunter_id, preferred=grandchild_id)
         if got:
             added += 1
             await safe_send(context, hunter_id, "☄️ АРМАГЕДДОН. Тебе выдана вторая цель — открой «🎯 Моя цель».")
