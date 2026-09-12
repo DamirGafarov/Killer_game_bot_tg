@@ -715,7 +715,7 @@ async def show_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["🏆 Топ киллеров", ""]
     for i, r in enumerate(rows, 1):
         mark = medals[i - 1] if i <= 3 else f"{i}."
-        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб. ({r['points']} очк.)")
+        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб.")
     await update.message.reply_text("\n".join(lines), reply_markup=menu_for(user_id))
 
 
@@ -836,9 +836,9 @@ async def register_kill(context: ContextTypes.DEFAULT_TYPE, hunter_id: int, vict
         (hunter_id, victim_id, code, reward),
     )
     db.execute(
-        "UPDATE players SET kills = kills + 1, points = points + %s, last_kill_date = NOW() "
+        "UPDATE players SET kills = kills + %s, points = points + %s, last_kill_date = NOW() "
         "WHERE user_id = %s",
-        (reward, hunter_id),
+        (reward, reward, hunter_id),
     )
     db.execute(
         "UPDATE players SET is_alive = FALSE, death_date = NOW(), killed_by = %s WHERE user_id = %s",
@@ -971,11 +971,11 @@ async def finish_game(context: ContextTypes.DEFAULT_TYPE, reason: str = "") -> N
     medals = ["🥇", "🥈", "🥉"]
     for i, r in enumerate(rows, 1):
         mark = medals[i - 1] if i <= 3 else f"{i}."
-        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб. ({r['points']} очк.)")
+        lines.append(f"{mark} {r['full_name']} — {r['kills']} уб.")
     result = "\n".join(lines)
 
     for i, r in enumerate(rows, 1):
-        personal = f"🏁 Игра окончена.\nТвоё место: {i} из {len(rows)}\nУбийств: {r['kills']} ({r['points']} очк.)\n\n"
+        personal = f"🏁 Игра окончена.\nТвоё место: {i} из {len(rows)}\nУбийств: {r['kills']}\nСвой баланс очков: {r['points']}\n\n"
         await safe_send(context, r["user_id"], personal + result, reply_markup=ReplyKeyboardRemove())
     await notify_admins(context, result)
 
