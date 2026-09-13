@@ -399,7 +399,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 REG_STEPS = [
     ("full_name", "Введи своё полное имя (ФИО или ФИ):", False),
     ("course", "Введи свой курс (например «3 курс», «преподаватель»):", False),
-    ("academic_group", "Введи академическую группу (например ЭИФ-103/6):", False),
+    ("academic_group", "Введи учебную группу (например Э-23-401):", False),
     ("social_links", "Укажи ссылки на соцсети (ВК, Telegram):", False),
     ("about_self", "Расскажи о себе: где обычно бываешь, примерный маршрут дня, любимые места.\n"
                    "Укажи также хобби:", False),
