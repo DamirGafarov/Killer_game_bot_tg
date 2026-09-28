@@ -967,6 +967,107 @@ async def finish_game(context: ContextTypes.DEFAULT_TYPE, reason: str = "") -> N
         await safe_send(context, r["user_id"], personal + result, reply_markup=ReplyKeyboardRemove())
     await notify_admins(context, result)
 
+# ---------------------------------------------------------------------------
+# АНОНИМНЫЕ СООБЩЕНИЯ
+# ---------------------------------------------------------------------------
+async def msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Бесплатные письма своему охотнику/жертве. Могут содержать фото."""
+    user_id = update.effective_user.id
+    text = (update.message.text or "")
+    to_killer = K.BTN_MSG_KILLER in text or "msg_killer" in text
+
+    if not game_started():
+        await update.message.reply_text("Игра ещё не идёт.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+
+    if to_killer:
+        row = db.fetch_one("SELECT hunter_id FROM targets WHERE target_id = %s AND is_active", (user_id,))
+        if not row:
+            await update.message.reply_text("На тебя сейчас никто не охотится.", reply_markup=menu_for(user_id))
+            return ConversationHandler.END
+        context.user_data["msg_to"] = [row["hunter_id"]]
+        context.user_data["msg_dir"] = "to_killer"
+        prompt = "Напиши анонимную записку своему охотнику (можно с фото):"
+    else:
+        rows = db.fetch_all("SELECT target_id FROM targets WHERE hunter_id = %s AND is_active", (user_id,))
+        if not rows:
+            await update.message.reply_text("У тебя нет активной цели.", reply_markup=menu_for(user_id))
+            return ConversationHandler.END
+        context.user_data["msg_to"] = [r["target_id"] for r in rows]
+        context.user_data["msg_dir"] = "to_target"
+        prompt = "Напиши анонимную записку своей жертве (можно с фото):"
+
+    await update.message.reply_text(prompt, reply_markup=K.cancel_only())
+    return MSG_TEXT
+
+
+async def msg_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    text = (update.message.text or update.message.caption or "").strip()
+    if text == K.BTN_CANCEL or (not update.message.photo and pressed_menu_button(text)):
+        await update.message.reply_text("Отменено.", reply_markup=menu_for(user_id))
+        return ConversationHandler.END
+    if len(text) > 800:
+        text = text[:800]
+
+    photo_id = update.message.photo[-1].file_id if update.message.photo else None
+    if not text and not photo_id:
+        await update.message.reply_text("Нужен текст или фото. Попробуй ещё раз.")
+        return MSG_TEXT
+
+    direction = context.user_data.get("msg_dir")
+    header = "📩 Анонимная записка от твоей жертвы:" if direction == "to_killer" \
+        else "📩 Анонимная записка от твоего охотника:"
+    sender = get_player(user_id)
+    sender_name = field(sender, "full_name", str(user_id)) if sender else str(user_id)
+
+    delivered = 0
+    for chat_id in context.user_data.get("msg_to", []):
+        body = f"{header}\n\n{text}" if text else header
+        if photo_id:
+            ok = bool(await safe_send_photo(context, chat_id, photo_id, body))
+        else:
+            ok = await safe_send(context, chat_id, body)
+        if ok:
+            delivered += 1
+        db.execute(
+            "INSERT INTO anon_messages (from_id, to_id, direction, body, photo_id, is_paid) "
+            "VALUES (%s,%s,%s,%s,%s,FALSE)",
+            (user_id, chat_id, direction, text, photo_id),
+        )
+        recipient = get_player(chat_id)
+        recipient_name = field(recipient, "full_name", str(chat_id)) if recipient else str(chat_id)
+        admin_copy = (
+            "✉️ Копия письма (бесплатно, не анонимно)\n"
+            f"От: {sender_name} ({user_id})\n"
+            f"Кому: {recipient_name} ({chat_id})\n"
+            f"Направление: {'жертва → киллер' if direction == 'to_killer' else 'киллер → жертва'}\n\n"
+            f"{text}"
+        )
+        await notify_admins_message(context, admin_copy, photo_id=photo_id)
+
+    await update.message.reply_text(
+        "✅ Записка доставлена." if delivered else "❌ Не удалось доставить записку.",
+        reply_markup=menu_for(user_id),
+    )
+    context.user_data.pop("msg_to", None)
+    context.user_data.pop("msg_dir", None)
+    return ConversationHandler.END
+
+
+async def safe_send_photo(context: ContextTypes.DEFAULT_TYPE, chat_id: int, photo_id: str, caption: str) -> bool:
+    try:
+        if len(caption) <= 1000:
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption)
+        else:
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption[:1000] + "…")
+            await context.bot.send_message(chat_id=chat_id, text=caption)
+        return True
+    except TelegramError as e:
+        logger.warning("Фото не доставлено %s: %s", chat_id, e)
+        return False
+
+
 
 # ---------------------------------------------------------------------------
 # Магазин
