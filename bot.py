@@ -704,7 +704,7 @@ TOP_KILLERS_SQL = """
 
 async def show_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    rows = db.fetch_all(TOP_KILLERS_SQL, (15,))
+    rows = db.fetch_all(TOP_KILLERS_SQL, (8,))
     if not rows:
         await update.message.reply_text("Пока никого нет.", reply_markup=menu_for(user_id))
         return
