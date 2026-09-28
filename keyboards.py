@@ -10,7 +10,7 @@ BTN_STATS = "📊 Статистика"
 BTN_TOP = "🏆 Топ киллеров"
 BTN_MSG_KILLER = "✉️ Письмо киллеру"
 BTN_MSG_TARGET = "✉️ Письмо жертве"
-BTN_MSG_ANY = "💰 Письмо игроку (1 очко)"
+BTN_SHOP = "🏪 Магазин"
 BTN_RULES = "📖 Правила"
 BTN_HELP = "❓ Помощь"
 BTN_LAST_WORDS = "🕯 Последнее слово"
@@ -33,7 +33,7 @@ BTN_ADMIN = "🛠 Админ-панель"
 
 ALL_MENU_BUTTONS = [
     BTN_TARGET, BTN_KILL, BTN_ME, BTN_STATS, BTN_TOP,
-    BTN_MSG_KILLER, BTN_MSG_TARGET, BTN_MSG_ANY, BTN_RULES, BTN_HELP, BTN_LAST_WORDS,
+    BTN_MSG_KILLER, BTN_MSG_TARGET, BTN_SHOP, BTN_RULES, BTN_HELP, BTN_LAST_WORDS,
     BTN_REGISTER, BTN_CANCEL_REG, BTN_ADMIN,
 ]
 
@@ -76,7 +76,7 @@ def game_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [BTN_TARGET, BTN_KILL],
         [BTN_ME, BTN_STATS],
         [BTN_MSG_KILLER, BTN_MSG_TARGET],
-        [BTN_MSG_ANY, BTN_TOP],
+        [BTN_SHOP, BTN_TOP],
         [BTN_RULES, BTN_HELP],
     ]
     if is_admin:
